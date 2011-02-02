@@ -23,9 +23,14 @@
 % of the regular expression as an s-expression
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
+%% TODO:
+% - ranged number of matches of sub-expr, e.g. {2,4}
+% - Some range operators still missing, 
+% - groups [:alnum:], [:digit:] etc.
+
 % We table re_compile/2 to avoid compiling the same regular expression
 % twice
-:- table re_compile/2.
+%:- table re_compile/2.
 
 re_compile(RegexAtom,Regexp) :-
 	atom(RegexAtom),
@@ -57,6 +62,25 @@ match_groups([R1|R2]) --> match_group(R1), match_groups(R2).
 
 match_group(grouped(R)) --> lparen, regexp(R), rparen.
 match_group(ungrouped(R)) --> regexp(R).
+
+% Reference to previous group
+match_group(groupref(Id)) --> groupref(Id).
+
+% reference to a previous group, but processed by some 
+% (externally defined) goal first
+%match_group(callref(Id,Goal)) -->l
+%	callref(Id,Goal).
+
+groupref(Id) -->
+	backslash,
+	integer_number(Id).
+	
+%callref(Id,Goal) -->
+%	backslash,
+%	[99,97,108,108] , % The atom call
+%	lparan, 
+%	prolog_goal(Goal),
+%	rparan.
 
 regexp(R) --> alternation(R).
 regexp(R) --> repetition(R).
@@ -131,6 +155,7 @@ star --> [42]. % '*'
 plus --> [43]. % '+'
 lparen --> [40]. % '('
 rparen --> [41]. % ')'
+backslash --> [92].
 
 symbol(S) --> escaped_control_character(S).
 symbol(S) --> simple_symbol(S).
@@ -153,6 +178,16 @@ alphanumeric_symbol(Type,S) -->
 digit(digit,S) -->
 	[ S ],
 	{ S >= 48, S =< 67 }.
+	
+integer_number(Number) -->
+	integer_number_list(NumList),
+	{ NumList \= [], number_chars(Number,NumList) }.
+
+integer_number_list([Digit|DigitsRest]) -->
+	digit(digit, DCode),
+	{ atom_codes(Digit,[DCode]) },
+	integer_number_list(DigitsRest).
+integer_number_list([]) -->	[].	
 
 % Lower case characters
 character(lower_case_char,S) -->
@@ -178,19 +213,22 @@ re_label(ElemId,ElemId,[],[]).
 % Leaf symbol, e.g. integer symbol code:
 re_label(ElemId,ElemId,Int, Int) :-	integer(Int).
 
+re_label(ElemIdIn,ElemIdOut,any,any(ElemIdIn)) :-
+	ElemIdOut is ElemIdIn + 1.
+
 re_label(ElemIdIn,ElemIdOut, [grouped(RE)], [grouped(ElemIdIn,RE1)]) :-
 	ElemIdNext is ElemIdIn + 1,
 	re_label(ElemIdNext,ElemIdOut,RE,RE1).
 	
 re_label(ElemIdIn,ElemIdOut,[ungrouped(RE)], [ungrouped(ElemIdIn,RE1)]) :-
 	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdOut,RE,RE1).		
+	re_label(ElemIdNext,ElemIdOut,RE,RE1).
 
 re_label(ElemIdIn,ElemIdOut,[star,RE], [star(ElemIdIn),RE1]) :-
 	ElemIdNext is ElemIdIn + 1,
 	re_label(ElemIdNext,ElemIdOut,RE,RE1).
 
-re_label(ElemIdIn,ElemIdOut,[concat,REA,REB], [concat(ElemIdIn),REA1,REB1]) :-
+re_label(ElemIdIn,ElemIdOut,[concat,REA,REB], [concat,REA1,REB1]) :-
 	ElemIdNext is ElemIdIn + 1,
 	re_label(ElemIdNext,ElemIdNext2,REA,REA1),
 	re_label(ElemIdNext2,ElemIdOut,REB,REB1).
@@ -213,86 +251,93 @@ values(star(_Id), [continue, stop]).
 % right side of a |
 values(or(_Id), [left,right]).
 
+values(any(_Id), AsciiCodes) :-
+	ascii_codes(AsciiCodes), !.
+		
+ascii_codes(Codes) :-
+%	ascii_codes_rec(1,255,Codes).
+	!,
+	ascii_codes_rec(97,99,Codes).	% for easier debugging
+	
+% ascii_codes_rec(+Min,+Max,Codes) 
+ascii_codes_rec(MinMax,MinMax,[MinMax]).
+ascii_codes_rec(Min,Max,[Min|RestCodes]) :-
+	NextCode is Min + 1, 
+	ascii_codes_rec(NextCode,Max,RestCodes).
+	
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Regular expression matching
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % I should have a custom encoding of this to avoid 
 % problems due to DCGs and PRISM
 
-% re_match for input as atom
-pre_match(Regex,String,MatchesAtoms) :-
-	atom(String),
-	atom_codes(String,StringCodes),
-	re_match(Regex,Matches,StringCodes,[]),
-	list_atom_codes(Matches,MatchesAtoms).
-
 list_atom_codes([],[]).
 list_atom_codes([CodeList|CodeListRest],[Atom|AtomsRest]) :-
 	atom_codes(Atom,CodeList),
 	list_atom_codes(CodeListRest,AtomsRest).
 
+% re_match for input as atom
+pre_match1(Regex,String,MatchesAtoms) :-
+	atom(String),
+	atom_codes(String,StringCodes),
+	pre_match(Regex,Matches,StringCodes),
+	list_atom_codes(Matches,MatchesAtoms).
+	
 % re_match for input as list of codes
-pre_match(Regex,StringCodes,Matches) :-
+pre_match1(Regex,StringCodes,Matches) :-
 	is_list(StringCodes), % verify that StringCodes is a list (e.g. not atom)
-	pre_match(Regex,Matches,StringCodes,[]).
+	pre_match(Regex,Matches,StringCodes).
+	
+%%% Regular expression matching (append)
 
 % Match the empty string
-pre_match([],[]).
+pre_match([],[],[]).
 
 % Fix groups later on
 % Don't remember what I meant by this one??
-pre_match([grouped(R)|Rest],[Match|MatchRest]) -->
-	pre_match(R,MatchNested),
-	{ flatten(MatchNested,Match) },
-	pre_match(Rest,MatchRest).
+pre_match([grouped(_id,R)|Rest],[Match|MatchRest], String) :-
+	append(StringGrouped,StringRest,String),
+%	write(StringGrouped),nl,
+%	write(pre_match(R,MatchNested,StringGrouped)),nl,
+	pre_match(R,MatchNested,StringGrouped),
+	flatten(MatchNested,Match), 
+	pre_match(Rest,MatchRest,StringRest).
 	
-pre_match([ungrouped(R)|Rest],MatchRest) :- 
-	pre_match(R,_),
-	pre_match(Rest,MatchRest).
-	 
-pre_match([group,Left],[group(Match)]) -->
-	pre_match(Left,Match).
-
-%% Choice operator
-
-pre_match([or(Id), Left, Right],Match) -->
+pre_match([ungrouped(_id,R)|Rest],MatchRest,String) :- 
+	pre_match([grouped(_id,R)|Rest],MatchRest,String).
+		 
+%% Choice operator:
+pre_match([or(Id), Left, Right],Match,String) :-
 	msw(or(Id),LeftRightChoice),
 	((LeftRightChoice==left) ->
-		pre_match(Left,Match)
+		pre_match(Left,Match,String)
 		;
-		pre_match(Right,Match)).
+		pre_match(Right,Match),String).
 
 % Concatenation:
+pre_match([concat(_),Left,[]],Match,String) :-
+	pre_match(Left,Match,String).
 
-pre_match([concat(_),Left,[]],Match) -->
-	pre_match(Left,Match).
+pre_match([concat,Left,Right],[MatchLeft|MatchRight],String) :-
+	append(StringLeft,StringRight,String),
+	pre_match(Left,MatchLeft,StringLeft),
+	pre_match(Right,MatchRight,StringRight).
 
-pre_match([concat(_id),Left,Right],[MatchLeft|MatchRight]) -->
-	pre_match(Left,MatchLeft),
-	pre_match(Right,MatchRight).
+% Match repetition:
 
-% Match repetition
+pre_match([star(_id),_],[],[]). % Matches if string is empty
 
-pre_match([star(_id),_],[]) --> [].
+pre_match([star(Id),Left],MatchAndMatchRest,String) :-
+	msw(star(Id),continue),
+	MatchAndMatchRest = [Match|MatchRest],
+	append(StringFirst,StringRest,String),
+	pre_match(Left,Match,StringFirst),
+	pre_match([star(Id),Left],MatchRest,StringRest).
 
-pre_match([star(Id),Left],MatchAndMatchRest) -->
-	msw(star(Id),ContinueStop),
-	((ContinueStop==continue) ->
-		MatchAndMatchRest = [Match|MatchRest],
-		pre_match(Left,Match),
-		pre_match([star(Id),Left],MatchRest)
-		;
-		MatchAndMatchRest = []).
+%% Match leaves:
+pre_match(SymbolCode,[SymbolCode],[SymbolCode]) :-
+	integer(SymbolCode).
 
-pre_match([star,_],[]) --> [].
-
-re_match(SymbolCode,[SymbolCode]) -->
-	{ integer(SymbolCode) },
-	[ SymbolCode ].
-	
-pre_match(SymbolCode,[SymbolCode]) -->
-	{ integer(SymbolCode) },
-	[ SymbolCode ].
-
-pre_match(any,[SymbolCode]) -->
-	[ SymbolCode ].
+pre_match(any(Id),[SymbolCode],[SymbolCode]) :-
+	msw(any(Id), SymbolCode).
