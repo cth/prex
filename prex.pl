@@ -24,9 +24,14 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% TODO:
+% - matching implementation capture groups
+% - Making it work as probabilistic program.
 % - ranged number of matches of sub-expr, e.g. {2,4}
 % - Some range operators still missing, 
 % - groups [:alnum:], [:digit:] etc.
+% - function calling..
+% - implementation of operators on backrefs
+% - More testing..
 
 % We table re_compile/2 to avoid compiling the same regular expression
 % twice
@@ -64,14 +69,14 @@ match_group(grouped(R)) --> lparen, regexp(R), rparen.
 match_group(ungrouped(R)) --> regexp(R).
 
 % Reference to previous group
-match_group(groupref(Id)) --> groupref(Id).
+match_group(backref(Id)) --> backref(Id).
 
 % reference to a previous group, but processed by some 
 % (externally defined) goal first
 %match_group(callref(Id,Goal)) -->l
 %	callref(Id,Goal).
 
-groupref(Id) -->
+backref(Id) -->
 	backslash,
 	integer_number(Id).
 	
@@ -206,39 +211,41 @@ character(upper_case_char,S) -->
 % probabilistic matching later on
 
 re_label(RE,LabelledRE) :-
-	re_label(1,_,RE,LabelledRE).
+	re_label(1,_,1,_,RE,LabelledRE).
 	
-re_label(ElemId,ElemId,[],[]).
+re_label(ElemId,ElemId,GroupId,GroupId,[],[]).
 
 % Leaf symbol, e.g. integer symbol code:
-re_label(ElemId,ElemId,Int, Int) :-	integer(Int).
+re_label(ElemId,ElemId,GroupId,GroupId,Int,Int) :- integer(Int).
 
-re_label(ElemIdIn,ElemIdOut,any,any(ElemIdIn)) :-
+re_label(ElemIdIn,ElemIdOut,GroupId,GroupId,any,any(ElemIdIn)) :- 
 	ElemIdOut is ElemIdIn + 1.
 
-re_label(ElemIdIn,ElemIdOut, [grouped(RE)], [grouped(ElemIdIn,RE1)]) :-
-	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdOut,RE,RE1).
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [grouped(RE)|Rest], [grouped(GroupIdIn,RE1)|LabelledRest]) :-
+	GroupIdNext is GroupIdIn + 1,
+	re_label(ElemIdIn,ElemIdOut1,GroupIdNext,GroupIdOut1,RE,RE1),
+	re_label(ElemIdOut1,ElemIdOut,GroupIdOut1,GroupIdOut,Rest,LabelledRest).
 	
-re_label(ElemIdIn,ElemIdOut,[ungrouped(RE)], [ungrouped(ElemIdIn,RE1)]) :-
-	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdOut,RE,RE1).
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[ungrouped(RE)|Rest], [ungrouped(RE1)|LabelledRest]) :-
+	re_label(ElemIdIn,ElemIdOut1,GroupIdIn,GroupIdOut1,RE,RE1),
+	re_label(ElemIdOut1,ElemIdOut,GroupIdOut1,GroupIdOut,Rest,LabelledRest).
 
-re_label(ElemIdIn,ElemIdOut,[star,RE], [star(ElemIdIn),RE1]) :-
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[backref(Id)|Rest], [backref(Id)|LabelledRest]) :-
+	re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,Rest,LabelledRest).
+		
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [star,RE], [star(ElemIdIn),RE1]) :-
 	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdOut,RE,RE1).
+	re_label(ElemIdNext,ElemIdOut,GroupIdIn,GroupIdOut,RE,RE1).
 
-re_label(ElemIdIn,ElemIdOut,[concat,REA,REB], [concat,REA1,REB1]) :-
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[concat,REA,REB], [concat,REA1,REB1]) :-
+	re_label(ElemIdIn,ElemId2,GroupIdIn,GroupIdInOut2,REA,REA1),
+	re_label(ElemId2,ElemIdOut,GroupIdInOut2,GroupIdOut,REB,REB1).
+
+re_label(ElemIdIn,ElemIdOut,GroupIdIn, GroupIdOut, [or(REA,REB)], [or(ElemIdIn,REA1,REB1)]) :-
 	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdNext2,REA,REA1),
-	re_label(ElemIdNext2,ElemIdOut,REB,REB1).
+	re_label(ElemIdNext,ElemIdNext2,GroupIdIn,GroupIdInOut2,REA,REA1),
+	re_label(ElemIdNext2,ElemIdOut,GroupIdInOut2,GroupIdOut,REB,REB1).
 
-
-re_label(ElemIdIn,ElemIdOut,[or(REA,REB)], [or(ElemIdIn,REA1,REB1)]) :-
-	ElemIdNext is ElemIdIn + 1,
-	re_label(ElemIdNext,ElemIdNext2,REA,REA1),
-	re_label(ElemIdNext2,ElemIdOut,REB,REB1).
-	
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Construction of random varibles
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -256,7 +263,7 @@ values(any(_Id), AsciiCodes) :-
 		
 ascii_codes(Codes) :-
 %	ascii_codes_rec(1,255,Codes).
-	!,
+%	!,
 	ascii_codes_rec(97,99,Codes).	% for easier debugging
 	
 % ascii_codes_rec(+Min,+Max,Codes) 
@@ -264,7 +271,6 @@ ascii_codes_rec(MinMax,MinMax,[MinMax]).
 ascii_codes_rec(Min,Max,[Min|RestCodes]) :-
 	NextCode is Min + 1, 
 	ascii_codes_rec(NextCode,Max,RestCodes).
-	
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Regular expression matching
@@ -296,48 +302,64 @@ pre_match([],[],[]).
 
 % Fix groups later on
 % Don't remember what I meant by this one??
-pre_match([grouped(_id,R)|Rest],[Match|MatchRest], String) :-
-	append(StringGrouped,StringRest,String),
-%	write(StringGrouped),nl,
-%	write(pre_match(R,MatchNested,StringGrouped)),nl,
-	pre_match(R,MatchNested,StringGrouped),
-	flatten(MatchNested,Match), 
-	pre_match(Rest,MatchRest,StringRest).
+pre_match([grouped(_id,R)|Rest],MatchedGroups,[],String) :-
+	append(StringMatchGroup,StringRest,String),
+	pre_match(R,MatchedGroups,MatchAcc1,StringMatchGroup),
+	flatten(MatchAcc1,MatchedGroup),
+	pre_match(Rest,[MatchedAccFlat|MatchedGroups],[],StringRest).
 	
-pre_match([ungrouped(_id,R)|Rest],MatchRest,String) :- 
-	pre_match([grouped(_id,R)|Rest],MatchRest,String).
-		 
+pre_match([ungrouped(R)|Rest],MatchedGroups,[],String) :- 
+	append(StringFirst,StringRest,String),
+	pre_match(R,MatchedGroups, _, StringFirst),
+	pre_match(R,MatchedGroup,[],StringRest).
+%	pre_match([grouped(R)|Rest],[_|MachedGroups],[]MatchRest,String).
+
 %% Choice operator:
-pre_match([or(Id), Left, Right],Match,String) :-
+pre_match([or(Id), Left, Right],MatchedGroups,MatchAcc,String) :-
 	msw(or(Id),LeftRightChoice),
 	((LeftRightChoice==left) ->
-		pre_match(Left,Match,String)
+		pre_match(Left,MatchedGroups,MatchAcc,String)
 		;
-		pre_match(Right,Match),String).
+		pre_match(Right,MatchedGroups,MatchAcc,String)).
 
 % Concatenation:
-pre_match([concat(_),Left,[]],Match,String) :-
-	pre_match(Left,Match,String).
+pre_match([concat(_),Left,[]],MatchedGroups,MatchAcc,String) :-
+	pre_match(Left,MatchedGroups,MatchAcc,String).
 
-pre_match([concat,Left,Right],[MatchLeft|MatchRight],String) :-
+pre_match([concat,Left,Right],MatchedGroups,MatchAcc,String) :-
 	append(StringLeft,StringRight,String),
-	pre_match(Left,MatchLeft,StringLeft),
-	pre_match(Right,MatchRight,StringRight).
+	pre_match(Left,MatchedGroups,MatchAcc1,StringLeft),
+	pre_match(Right,MatchedGroups,MatchAcc2,StringRight),
+	append(MatchAcc1,MatchAcc2,MatchAcc).
 
 % Match repetition:
 
-pre_match([star(_id),_],[],[]). % Matches if string is empty
+pre_match([star(_id),_],_MatchedGroups,[],[]). % Matches if string is empty
 
-pre_match([star(Id),Left],MatchAndMatchRest,String) :-
+pre_match([star(Id),Left],MatchedGroups,[Match1|MatchRest],String) :-
 	msw(star(Id),continue),
-	MatchAndMatchRest = [Match|MatchRest],
 	append(StringFirst,StringRest,String),
-	pre_match(Left,Match,StringFirst),
-	pre_match([star(Id),Left],MatchRest,StringRest).
+	pre_match(Left,MatchedGroups,Match1,StringFirst),
+	pre_match([star(Id),Left],MatchedGroups,MatchRest,StringRest).
+	
+% Back references:
+pre_match([backref(Id)], MatchedGroups, MatchAcc, String) :-
+	extract_ref(Id,MatchedGroups,RefExpr),
+	pre_match(RefExpr,[],MatchAcc,String).
 
+extract_ref(Id,[ReferencedGroups|RestGroups],RefExprCompiled) :-
+	length([ReferencedGroup|RestGroups],Id),
+	RefExpr1 = [94|ReferencedGroup],
+	reverse(RefExpr1,RefExpr2),
+	RefExpr3 = [36|RefExpr2],
+	reverse(RefExpr3,RefExpr4),
+	re_compile(RefExpr4,RefExprCompiled).
+extract_ref(Id,[_|MatchedGroups],RefExpr) :-
+	extract_ref(Id,MatchedGroups,RefExpr).
+	
 %% Match leaves:
-pre_match(SymbolCode,[SymbolCode],[SymbolCode]) :-
+pre_match(SymbolCode,_,[SymbolCode],[SymbolCode]) :-
 	integer(SymbolCode).
-
-pre_match(any(Id),[SymbolCode],[SymbolCode]) :-
+	
+pre_match(any(Id),_,[SymbolCode],[SymbolCode]) :-
 	msw(any(Id), SymbolCode).
