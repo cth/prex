@@ -35,7 +35,7 @@
 
 % We table re_compile/2 to avoid compiling the same regular expression
 % twice
-%:- table re_compile/2.
+:- table re_compile/2.
 
 re_compile(RegexAtom,Regexp) :-
 	atom(RegexAtom),
@@ -69,17 +69,13 @@ match_group(grouped(R)) --> lparen, regexp(R), rparen.
 match_group(ungrouped(R)) --> regexp(R).
 
 % Reference to previous group
-match_group(backref(Id)) --> backref(Id).
+%match_group(backref(Id)) --> backref(Id).
 
 % reference to a previous group, but processed by some 
 % (externally defined) goal first
 %match_group(callref(Id,Goal)) -->l
 %	callref(Id,Goal).
 
-backref(Id) -->
-	backslash,
-	integer_number(Id).
-	
 %callref(Id,Goal) -->
 %	backslash,
 %	[99,97,108,108] , % The atom call
@@ -90,6 +86,7 @@ backref(Id) -->
 regexp(R) --> alternation(R).
 regexp(R) --> repetition(R).
 regexp(R) --> concatenation(R).
+
 
 alternation([or,R1,R2]) --> 
 	alternation_primitive(R1),
@@ -111,11 +108,17 @@ repetition_primitive(R) --> lparen, alternation(R), rparen.
 
 concatenation([concat,R1,R2]) --> concatenation_primitive(R1), concatenation(R2).
 concatenation([concat,R,[]]) --> concatenation_primitive(R).
+concatenation([concat,R,[]]) --> backref_primitive(R).
 
+concatenation_primitive(R) --> backref(R).
 concatenation_primitive(R) --> symbol(R).
 concatenation_primitive(R) --> repetition(R).
 concatenation_primitive(R) --> lparen, alternation(R), rparen.
 concatenation_primitive(R) --> bracket_expression(R).
+
+backref([backref,Id]) -->
+	backslash,
+	integer_number(Id).
 
 % A ranges group is something like [Xa-zA-F].
 bracket_expression(R) -->
@@ -220,6 +223,8 @@ re_label(ElemId,ElemId,GroupId,GroupId,Int,Int) :- integer(Int).
 
 re_label(ElemIdIn,ElemIdOut,GroupId,GroupId,any,any(ElemIdIn)) :- 
 	ElemIdOut is ElemIdIn + 1.
+	
+re_label(ElemId,ElemId,GroupId,GroupId,[backref,Id], [backref,Id]).
 
 re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [grouped(RE)|Rest], [grouped(GroupIdIn,RE1)|LabelledRest]) :-
 	GroupIdNext is GroupIdIn + 1,
@@ -230,8 +235,6 @@ re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[ungrouped(RE)|Rest], [ungroupe
 	re_label(ElemIdIn,ElemIdOut1,GroupIdIn,GroupIdOut1,RE,RE1),
 	re_label(ElemIdOut1,ElemIdOut,GroupIdOut1,GroupIdOut,Rest,LabelledRest).
 
-re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[backref(Id)|Rest], [backref(Id)|LabelledRest]) :-
-	re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,Rest,LabelledRest).
 		
 re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [star,RE], [star(ElemIdIn),RE1]) :-
 	ElemIdNext is ElemIdIn + 1,
@@ -284,82 +287,92 @@ list_atom_codes([CodeList|CodeListRest],[Atom|AtomsRest]) :-
 	list_atom_codes(CodeListRest,AtomsRest).
 
 % re_match for input as atom
-pre_match1(Regex,String,MatchesAtoms) :-
+pre_match(Regex,String,MatchesAtoms) :-
 	atom(String),
 	atom_codes(String,StringCodes),
-	pre_match(Regex,Matches,StringCodes),
+	pre_match_groups(Regex,[],ReverseMatches,StringCodes),
+	reverse(ReverseMatches,Matches),
 	list_atom_codes(Matches,MatchesAtoms).
 	
 % re_match for input as list of codes
-pre_match1(Regex,StringCodes,Matches) :-
+pre_match(Regex,StringCodes,Matches) :-
 	is_list(StringCodes), % verify that StringCodes is a list (e.g. not atom)
-	pre_match(Regex,Matches,StringCodes).
-	
-%%% Regular expression matching (append)
+	reverse(ReverseMatches,Matches),
+	pre_match_groups(Regex,[],ReverseMatches,StringCodes).
+
+% pre_match_groups:
+% Matches top-level expressed either encapsulated by a capture
+% group or not
+pre_match_groups([],MatchedGroups,MatchedGroups,[]).
+
+pre_match_groups([grouped(_id,R)|Rest],MatchedGroupsIn,MatchedGroupsOut,String) :-
+	append(StringMatchGroup,StringRest,String),
+	pre_match_rec(R,MatchedGroupsIn,AccumulateMatches,StringMatchGroup),
+	flatten(AccumulateMatches,MatchedGroup),
+	pre_match_groups(Rest,[MatchedGroup|MatchedGroupsIn],MatchedGroupsOut,StringRest).
+
+pre_match_groups([ungrouped(R)|Rest],MatchedGroupsIn,MatchedGroupsOut,String) :-
+	append(StringFirst,StringRest,String),
+	pre_match_rec(R,MatchedGroupsIn, _, StringFirst),
+	pre_match_groups(Rest,MatchedGroupsIn,MatchedGroupsOut,StringRest).
+
+%%% Regular expression matching recursive definition
 
 % Match the empty string
-pre_match([],[],[]).
-
-% Fix groups later on
-% Don't remember what I meant by this one??
-pre_match([grouped(_id,R)|Rest],MatchedGroups,[],String) :-
-	append(StringMatchGroup,StringRest,String),
-	pre_match(R,MatchedGroups,MatchAcc1,StringMatchGroup),
-	flatten(MatchAcc1,MatchedGroup),
-	pre_match(Rest,[MatchedAccFlat|MatchedGroups],[],StringRest).
-	
-pre_match([ungrouped(R)|Rest],MatchedGroups,[],String) :- 
-	append(StringFirst,StringRest,String),
-	pre_match(R,MatchedGroups, _, StringFirst),
-	pre_match(R,MatchedGroup,[],StringRest).
-%	pre_match([grouped(R)|Rest],[_|MachedGroups],[]MatchRest,String).
+pre_match_rec([],_,[],[]).
 
 %% Choice operator:
-pre_match([or(Id), Left, Right],MatchedGroups,MatchAcc,String) :-
+pre_match_rec([or(Id), Left, Right],MatchedGroups,MatchAcc,String) :-
 	msw(or(Id),LeftRightChoice),
 	((LeftRightChoice==left) ->
-		pre_match(Left,MatchedGroups,MatchAcc,String)
+		pre_match_rec(Left,MatchedGroups,MatchAcc,String)
 		;
-		pre_match(Right,MatchedGroups,MatchAcc,String)).
+		pre_match_rec(Right,MatchedGroups,MatchAcc,String)).
 
 % Concatenation:
-pre_match([concat(_),Left,[]],MatchedGroups,MatchAcc,String) :-
-	pre_match(Left,MatchedGroups,MatchAcc,String).
+pre_match_rec([concat(_),Left,[]],MatchedGroups,MatchAcc,String) :-
+	pre_match_rec(Left,MatchedGroups,MatchAcc,String).
 
-pre_match([concat,Left,Right],MatchedGroups,MatchAcc,String) :-
+pre_match_rec([concat,Left,Right],MatchedGroups,MatchAcc,String) :-
 	append(StringLeft,StringRight,String),
-	pre_match(Left,MatchedGroups,MatchAcc1,StringLeft),
-	pre_match(Right,MatchedGroups,MatchAcc2,StringRight),
+	pre_match_rec(Left,MatchedGroups,MatchAcc1,StringLeft),
+	pre_match_rec(Right,MatchedGroups,MatchAcc2,StringRight),
 	append(MatchAcc1,MatchAcc2,MatchAcc).
 
 % Match repetition:
 
-pre_match([star(_id),_],_MatchedGroups,[],[]). % Matches if string is empty
+pre_match_rec([star(_id),_],_MatchedGroups,[],[]). % Matches if string is empty
 
-pre_match([star(Id),Left],MatchedGroups,[Match1|MatchRest],String) :-
+pre_match_rec([star(Id),Left],MatchedGroups,[Match1|MatchRest],String) :-
 	msw(star(Id),continue),
 	append(StringFirst,StringRest,String),
-	pre_match(Left,MatchedGroups,Match1,StringFirst),
-	pre_match([star(Id),Left],MatchedGroups,MatchRest,StringRest).
+	pre_match_rec(Left,MatchedGroups,Match1,StringFirst),
+	pre_match_rec([star(Id),Left],MatchedGroups,MatchRest,StringRest).
 	
 % Back references:
-pre_match([backref(Id)], MatchedGroups, MatchAcc, String) :-
+pre_match_rec([backref,Id], MatchedGroups, MatchAcc, String) :-
 	extract_ref(Id,MatchedGroups,RefExpr),
-	pre_match(RefExpr,[],MatchAcc,String).
+	%write(extract_ref(Id,MatchedGroups,RefExpr)),nl,
+	pre_match_rec(RefExpr,[],MatchAcc,String).
 
-extract_ref(Id,[ReferencedGroups|RestGroups],RefExprCompiled) :-
+%% Match leaves:
+pre_match_rec(SymbolCode,_,[SymbolCode],[SymbolCode]) :-
+	integer(SymbolCode).
+	
+pre_match_rec(any(Id),_,[SymbolCode],[SymbolCode]) :-
+	msw(any(Id), SymbolCode).
+	
+extract_ref(Id,[ReferencedGroup|RestGroups],SubExpr) :-
 	length([ReferencedGroup|RestGroups],Id),
+	% Insert ^ and $ to avoid building an re which also reconizes sorroundings
 	RefExpr1 = [94|ReferencedGroup],
 	reverse(RefExpr1,RefExpr2),
 	RefExpr3 = [36|RefExpr2],
 	reverse(RefExpr3,RefExpr4),
-	re_compile(RefExpr4,RefExprCompiled).
+	!,
+	% No need to label, it will only consist of (unnumbered) concats
+	re_compile(RefExpr4,[ungrouped(SubExpr)]),
+	!.
+	
 extract_ref(Id,[_|MatchedGroups],RefExpr) :-
 	extract_ref(Id,MatchedGroups,RefExpr).
-	
-%% Match leaves:
-pre_match(SymbolCode,_,[SymbolCode],[SymbolCode]) :-
-	integer(SymbolCode).
-	
-pre_match(any(Id),_,[SymbolCode],[SymbolCode]) :-
-	msw(any(Id), SymbolCode).

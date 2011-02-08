@@ -1,75 +1,117 @@
 
-:- ['prex.psm']. % Load prex as Prolog program
+:- ['prex.pl']. % Load prex as Prolog program
 
 % Fake MSW to simulate PRISM
 msw(A,B) :-
 	values(A,C),
 	member(B,C).
+	
+run_test(Name) :-
+	write('running test '), 
+	write(Name),
+	write('\t'),
+	call(Name),
+	write('-\tok'),nl.
+	
 
-
+run_tests :-
+	run_test(test1),!,
+	run_test(test2),!,
+	run_test(test3),!,
+	run_test(test4),!,
+	run_test(test5),!,
+	run_test(test6),!,
+	run_test(test7),!,
+	run_test(test8),!,
+	run_test(test9),!,
+	run_test(test10),!,
+	run_test(test11).
+	
 % Matching of a single character with single character regular expression
-% OK
-t1 :-
-	RE = [grouped(1,[concat,97,[]])],
-	pre_match1(RE,'a',Matches),
-	write(Matches),nl.
+test1 :-
+	re_compile('^a*$',RE),!,
+	%write(RE),nl,
+	re_label(RE,REL),!,
+	%write(REL),nl,
+	pre_match(REL,'a',[]).
+
+% Same as 1.1, but with capture group	
+test2 :-
+	re_compile('^(a*)$',RE),!,
+	%write(RE),nl,
+	re_label(RE,REL),!,
+	%write(REL),nl,
+	pre_match(REL,'a',[a]).
 	
 % Matching of two characters with two character regular expression
-t2 :-
-	RE = [grouped(1, [concat,97,[concat,98,[]]])],
-	pre_match1(RE,'ab',Matches),
-	write(Matches),nl.
-
-
+test3 :-
+	re_compile('^(a*)(b*)$',RE),!,
+	%write(RE),nl,
+	re_label(RE,REL),!,
+	%write(REL),nl,
+	pre_match(REL,'ab',[a,b]).
 
 % Test that matching with the any character works as expected
-t3 :-
-	%re_compile('^..a*$',R), re_label(R,L).
-	RE = [grouped(1,[concat,any(3),[]])],
-	pre_match1(RE,'a',Matches),
-	write(Matches),nl.	
+test4 :-
+	re_compile('^.$',RE),!,
+	re_label(RE,REL),!,
+	pre_match(REL,'b',[]).
 
-% Multiple any characters
-t4 :-
-	%re_compile('^..a*$',R), re_label(R,L).
-	RE = [grouped(1,[concat,any(3),[concat,any(5),[]]])],
-	pre_match1(RE,'ab',Matches),
-	write(Matches),nl.
+% Capture groups and any characters
+test5 :-
+	re_compile('^..(..)..$',RE),
+	%write(RE),nl,
+	re_label(RE,REL),
+	pre_match(REL,'ababab',[ab]).
 	
-	
-% Multiple any characters
-% should fail! 
-t5_fail :-
-	re_compile('^(..a*)$',R),
-	re_label(R,RE),
-	%RE = [ungrouped(1,[concat,any(3),[concat,any(5),[concat,[star(7),[concat,97,[]]],[]]]])],
-	write(RE),nl,
-	pre_match1(RE,'abba',M),
-	write(M).
-	
-t5_success :-
-	re_compile('^(...a*.)$',R),
-	re_label(R,RE),
-	%RE = [ungrouped(1,[concat,any(3),[concat,any(5),[concat,[star(7),[concat,97,[]]],[]]]])],
-	write(RE),nl,
-	pre_match1(RE,'abbaaaab',M),
-	write(M).
+% Combining capture groups, any characters and repetition.
+test6 :-
+	re_compile('^.(.*).(.)$',RE),
+	%write(RE),nl,
+	re_label(RE,REL),
+	pre_match(REL,'ababab',[bab,b]).
 
-% should fail
-t6 :-
-	re_compile('^.$',R), re_label(R,RE),
-	pre_match(RE,'aa',M),
-	write(M),nl.
 
-t7 :-
-	%re_compile('^a*b*$',R), re_label(R,RE),
-	RE = [grouped(1,[concat,[star(3),[concat,97,[]]],[concat,[star(6),[concat,98,[]]],[]]])],
-	pre_match1(RE,'aab',M),
-	write(M),
-	nl.
+% Nesting groups and capture groups
+test7 :-
+	re_compile('^a((bb)*)a$',RE),
+	%write(RE),nl,
+	re_label(RE,REL),
+	pre_match(REL,'abbbba',[bbbb]).
 	
-t8 :-
-	re_compile('^a*b*a*$',R), re_label(R,RE),
-	pre_match1(RE,'aabaaa',M),
-	write(M),
-	nl.
+
+% Ambiguous version of above
+test8 :-
+	re_compile('^.*((bb)*).*$',RE),
+	%write(RE),nl,
+	re_label(RE,REL),
+	pre_match(REL,'abbbba',[bbbb]),
+	pre_match(REL,'abbbba',[bb]),
+	not(pre_match(REL,'abbbba',[b])).
+	
+% Playing with capture groups, e.g. match a repeat
+test9 :-
+	re_compile('^(.*)\\1$',RE),!,
+	re_label(RE,REL),!,
+	pre_match(REL,'bb',[b]).
+
+% Two match groups 
+test10 :-
+	re_compile('^(.*)(.*)\\1\\2$',RE),!,
+	re_label(RE,REL),!,
+	pre_match(REL,'abab',[a,b]).
+	
+% Capturing sub expressions with backreferences
+% This is sick :-)
+test11 :-
+	re_compile('^(.)(.)(\\1\\2\\2\\1)$',RE),!,
+	re_label(RE,REL),!,
+	pre_match(REL,'ababba',[a,b,abba]).
+	
+test11 :-
+	re_compile('^(.)(.)(\\1\\2\\2\\1)$',RE),!,
+	re_label(RE,REL),!,
+	pre_match(REL,'ababba',[a,b,abba]).
+	
+	
+
