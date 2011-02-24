@@ -24,18 +24,20 @@
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 %% TODO:
-% - matching implementation capture groups
 % - Making it work as probabilistic program.
-% - ranged number of matches of sub-expr, e.g. {2,4}
-% - Some range operators still missing, 
-% - groups [:alnum:], [:digit:] etc.
-% - function calling..
-% - implementation of operators on backrefs
+% - Some range operators still missing,
 % - More testing..
+
+% IDEA:
+% tabling may be used to for some call functions (perhaps a syntactic way of specifying this?)
+% E.g. it would be a bad idea for the noisy function.
 
 % We table re_compile/2 to avoid compiling the same regular expression
 % twice
-:- table re_compile/2.
+%:- table re_compile/2.
+
+% Defines how many times a * may repeat at most 
+global_repeat_max(1000).
 
 re_compile(RegexAtom,Regexp) :-
 	atom(RegexAtom),
@@ -56,7 +58,7 @@ re_compile(RegexpCodes,Regexp) :-
 	match_groups(Regexp,FinalCodes,[]).
 
 control_character(C) :-
-	atom_codes('()|?*+[]\\.$^',ControlCharacters),
+	atom_codes('#()|?*+[]{}\\.$^',ControlCharacters),
 	member(C,ControlCharacters).
 
 non_control_character(C) :-
@@ -68,27 +70,12 @@ match_groups([R1|R2]) --> match_group(R1), match_groups(R2).
 match_group(grouped(R)) --> lparen, regexp(R), rparen.
 match_group(ungrouped(R)) --> regexp(R).
 
-% Reference to previous group
-%match_group(backref(Id)) --> backref(Id).
-
-% reference to a previous group, but processed by some 
-% (externally defined) goal first
-%match_group(callref(Id,Goal)) -->l
-%	callref(Id,Goal).
-
-%callref(Id,Goal) -->
-%	backslash,
-%	[99,97,108,108] , % The atom call
-%	lparan, 
-%	prolog_goal(Goal),
-%	rparan.
-
 regexp(R) --> alternation(R).
 regexp(R) --> repetition(R).
 regexp(R) --> concatenation(R).
+regexp(R) --> callref(R).
 
-
-alternation([or,R1,R2]) --> 
+alternation([or,R1,R2]) -->
 	alternation_primitive(R1),
 	or,
 	alternation(R2).
@@ -97,9 +84,19 @@ alternation([or,R1,R2]) --> alternation_primitive(R1), or, alternation_primitive
 alternation_primitive(R) --> repetition(R).
 alternation_primitive(R) --> concatenation(R).
 
-repetition([star, R]) --> repetition_primitive(R), star.
-repetition([concat, R, [star, R]]) --> repetition_primitive(R), plus.
+repetition([star(0,Max), R]) --> { global_repeat_max(Max) }, repetition_primitive(R), star.
+%repetition([concat, R, [star(0,n), R]]) --> repetition_primitive(R), plus.
+repetition([concat, R, [star(0,Max), R]]) --> { global_repeat_max(Max) }, repetition_primitive(R), plus.
 repetition([or,R,[]]) --> repetition_primitive(R), question_mark.
+
+repetition([star(MinMatch,MaxMatch),R]) -->
+	repetition_primitive(R),
+	%{ write(R),nl },
+	lcurly,
+	integer_number(MinMatch),
+	comma,
+	integer_number(MaxMatch),
+	rcurly.
 
 repetition_primitive([concat, R, []]) --> symbol(R). % Note, single symbols are concatenated with empty list
 repetition_primitive(R) --> bracket_expression(R).
@@ -108,17 +105,48 @@ repetition_primitive(R) --> lparen, alternation(R), rparen.
 
 concatenation([concat,R1,R2]) --> concatenation_primitive(R1), concatenation(R2).
 concatenation([concat,R,[]]) --> concatenation_primitive(R).
-concatenation([concat,R,[]]) --> backref_primitive(R).
 
-concatenation_primitive(R) --> backref(R).
-concatenation_primitive(R) --> symbol(R).
+concatenation_primitive(R) --> backref_primitive(R).
 concatenation_primitive(R) --> repetition(R).
+concatenation_primitive(R) --> symbol(R).
 concatenation_primitive(R) --> lparen, alternation(R), rparen.
 concatenation_primitive(R) --> bracket_expression(R).
 
-backref([backref,Id]) -->
+backref_primitive([backref,Id]) -->
 	backslash,
 	integer_number(Id).
+
+% Callrefs
+callref([function,Goal]) -->	
+	hash,
+	lcurly,
+	call_goal(Goal),
+	rcurly.
+
+% A syntax for goals which can be call
+call_goal(CallGoal) -->
+	functor(FTORCodes),
+	lparen,
+	function_argument_list(ArgList),
+	rparen,
+	{ atom_codes(FTORAtom,FTORCodes), CallGoal =.. [ FTORAtom | ArgList ] }.
+
+functor([C|FunctorRest]) -->
+	character(lower_case_char,C),
+	functor_characters(FunctorRest).
+
+functor_characters([]) --> [].
+functor_characters([C|FunctorRest]) -->
+	alphanumeric_symbol(_,C),
+	functor_characters(FunctorRest).
+
+function_argument_list([])--> [].
+function_argument_list([Id]) -->
+	backref_primitive([backref,Id]).
+function_argument_list([Id|IdRest]) -->
+	backref_primitive([backref,Id]),
+	comma,
+	function_argument_list(IdRest).
 
 % A ranges group is something like [Xa-zA-F].
 bracket_expression(R) -->
@@ -161,9 +189,13 @@ or --> [124]. % '|'
 question_mark --> [63]. % '?'
 star --> [42]. % '*'
 plus --> [43]. % '+'
+comma --> [44]. % ','
 lparen --> [40]. % '('
 rparen --> [41]. % ')'
 backslash --> [92].
+lcurly --> [123]. % '{'
+rcurly --> [125]. % '}'
+hash --> [35].
 
 symbol(S) --> escaped_control_character(S).
 symbol(S) --> simple_symbol(S).
@@ -206,7 +238,7 @@ character(lower_case_char,S) -->
 character(upper_case_char,S) -->
 	[ S ],
 	{ S >= 65, S =< 90 }.
-	
+
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 % Numbering of regular expression constituents
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
@@ -226,6 +258,8 @@ re_label(ElemIdIn,ElemIdOut,GroupId,GroupId,any,any(ElemIdIn)) :-
 	
 re_label(ElemId,ElemId,GroupId,GroupId,[backref,Id], [backref,Id]).
 
+re_label(ElemId,ElemId,GroupId,GroupId,[function,CallGoal], [function,CallGoal]).
+
 re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [grouped(RE)|Rest], [grouped(GroupIdIn,RE1)|LabelledRest]) :-
 	GroupIdNext is GroupIdIn + 1,
 	re_label(ElemIdIn,ElemIdOut1,GroupIdNext,GroupIdOut1,RE,RE1),
@@ -236,7 +270,7 @@ re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut,[ungrouped(RE)|Rest], [ungroupe
 	re_label(ElemIdOut1,ElemIdOut,GroupIdOut1,GroupIdOut,Rest,LabelledRest).
 
 		
-re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [star,RE], [star(ElemIdIn),RE1]) :-
+re_label(ElemIdIn,ElemIdOut,GroupIdIn,GroupIdOut, [star(Min,Max),RE], [star(ElemIdIn,constraint(0,Min,Max)),RE1]) :-
 	ElemIdNext is ElemIdIn + 1,
 	re_label(ElemIdNext,ElemIdOut,GroupIdIn,GroupIdOut,RE,RE1).
 
@@ -341,13 +375,32 @@ pre_match_rec([concat,Left,Right],MatchedGroups,MatchAcc,String) :-
 
 % Match repetition:
 
-pre_match_rec([star(_id),_],_MatchedGroups,[],[]). % Matches if string is empty
+% Matches if string is empty
+pre_match_rec([star(_id,constraint(RepeatCount,Min,_)),_],_MatchedGroups,[],[]) :- 
+	RepeatCount >= Min.
 
-pre_match_rec([star(Id),Left],MatchedGroups,[Match1|MatchRest],String) :-
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,[Match1|MatchRest],String) :-
+	RepeatCount =< Max,
 	msw(star(Id),continue),
 	append(StringFirst,StringRest,String),
 	pre_match_rec(Left,MatchedGroups,Match1,StringFirst),
-	pre_match_rec([star(Id),Left],MatchedGroups,MatchRest,StringRest).
+	NextRepeatCount is RepeatCount + 1,
+	pre_match_rec([star(Id,constraint(NextRepeatCount,Min,Max)),Left],MatchedGroups,MatchRest,StringRest).
+
+% FIXME: TO BE TESTED (TOMORROW)
+pre_match_rec([function,Goal], MatchedGroups, MatchAcc, String) :-
+	Goal =.. [Functor|ArgList1],
+	replace_backreference_arguments(ArgList1,MatchedGroups,ArgList2),
+	% Add a "return" argument
+	append(ArgList2,[Return],ArgList3),
+	CallGoal =.. [Functor|ArgList3],
+	call(CallGoal),
+	RefExpr1 = [94|Return],
+	reverse(RefExpr1,RefExpr2),
+	RefExpr3 = [36|RefExpr2],
+	reverse(RefExpr3,RefExpr4),!,
+	re_compile(RefExpr4,[ungrouped(SubExpr)]),
+	pre_match_rec(SubExpr,[],MatchAcc,String).
 	
 % Back references:
 pre_match_rec([backref,Id], MatchedGroups, MatchAcc, String) :-
@@ -376,3 +429,8 @@ extract_ref(Id,[ReferencedGroup|RestGroups],SubExpr) :-
 	
 extract_ref(Id,[_|MatchedGroups],RefExpr) :-
 	extract_ref(Id,MatchedGroups,RefExpr).
+
+replace_backreference_arguments([],_MatchedGroups,[]).
+replace_backreference_arguments([Arg|ArgS],MatchedGroups,[Arg2|Arg2S]) :-
+	nth(Arg,MatchedGroups,Arg2),
+	replace_backreference_arguments(ArgS,MatchedGroups,Arg2S).

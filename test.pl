@@ -25,7 +25,9 @@ run_tests :-
 	run_test(test8),!,
 	run_test(test9),!,
 	run_test(test10),!,
-	run_test(test11).
+	run_test(test11),!,
+	run_test(test12),!,
+	run_test(test13).
 	
 % Matching of a single character with single character regular expression
 test1 :-
@@ -112,6 +114,40 @@ test11 :-
 	re_compile('^(.)(.)(\\1\\2\\2\\1)$',RE),!,
 	re_label(RE,REL),!,
 	pre_match(REL,'ababba',[a,b,abba]).
+	
+% Testing the {m,n} operator
+	
+test12 :-
+	re_compile('^(.{2,5})(.*)$',RE),!,
+	re_label(RE,REL),!,
+	findall(X,pre_match(REL,'bbaaa',X),MatchLists),
+	subtract(MatchLists,[[bb,aaa],[bba,aa],[bbaa,a],[bbaaa,'']],[]).
+
+%	pre_match(REL,'aaaaa',[aa,aaa]), 
+%	pre_match(REL,'aaaaa',[aaa,aa]).
+%	pre_match(REL,'aaaaa',[aaaa,a]).
+%	pre_match(REL,'aaaaa',[aaaaa,[]]).
+
+
+test13 :-
+	re_compile('^(.*)(#{reverse(\\1)})$',RE),!,
+	%write(RE),nl,
+	re_label(RE,REL),!,
+	%write(REL),nl,
+	pre_match(REL,'abba',[ab,ba]).
+
+test_call_goal :-
+	atom_codes('rev(\\1)',Codes),
+	call_goal(Goal,Codes,[]),
+	write_canonical(Goal),nl.
+	
+test_callref :-
+	atom_codes('#{rev(\\1,\\2,\\3)}',Codes),
+	callref(Goal,Codes,[]),
+	write(Goal).
+	
+	
+		
 	
 	
 
