@@ -1,5 +1,8 @@
+:- [compiler]. 
+:- [alphabet].
+:- ['regex_model.psm']. % Load the matcher as ordinary prolog program 
 
-:- ['prex.pl']. % Load prex as Prolog program
+active_alphabet(abc).
 
 % Fake MSW to simulate PRISM
 msw(A,B) :-
@@ -64,6 +67,7 @@ test5 :-
 	re_compile('^..(..)..$',RE),
 	%write(RE),nl,
 	re_label(RE,REL),
+	write(REL),nl,
 	pre_match(REL,'ababab',[ab]).
 	
 % Combining capture groups, any characters and repetition.
@@ -123,12 +127,6 @@ test12 :-
 	findall(X,pre_match(REL,'bbaaa',X),MatchLists),
 	subtract(MatchLists,[[bb,aaa],[bba,aa],[bbaa,a],[bbaaa,'']],[]).
 
-%	pre_match(REL,'aaaaa',[aa,aaa]), 
-%	pre_match(REL,'aaaaa',[aaa,aa]).
-%	pre_match(REL,'aaaaa',[aaaa,a]).
-%	pre_match(REL,'aaaaa',[aaaaa,[]]).
-
-
 test13 :-
 	re_compile('^(.*)(#{reverse(\\1)})$',RE),!,
 	%write(RE),nl,
@@ -145,9 +143,3 @@ test_callref :-
 	atom_codes('#{rev(\\1,\\2,\\3)}',Codes),
 	callref(Goal,Codes,[]),
 	write(Goal).
-	
-	
-		
-	
-	
-

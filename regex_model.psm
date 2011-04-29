@@ -1,0 +1,411 @@
+% The PRISM interpreter for probabilistic regular expressions
+
+:-set_prism_flag(log_scale,on). 
+%:-set_prism_flag(learn_mode,both).
+
+:- [revcmpl].
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Construction of random varibles
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% The paramterized star(_) variable represents the choice
+% between continued matching or stopping the match 
+values(star(ID), [continue, stop]) :-
+	variables_by_functor(star,IDs),!,
+	member(ID,IDs).
+
+% This variable represents choices between the left and 
+% right side of a |
+values(or(ID), [left,right]) :-
+	variables_by_functor(or,IDs),
+	member(ID,IDs).
+
+values(any(ID), Codes) :-
+	active_alphabet(Alphabet),
+	alphabet_codes(Alphabet,Codes),
+	variables_by_functor(any,IDs),
+	member(ID,IDs).
+	
+% The noisy function
+
+values(noisy_action,[mutate,delete,insert]).
+
+values(mutate(I),Codes) :-
+	active_alphabet(Alphabet),
+	alphabet_codes(Alphabet,Codes),
+	member(I,Codes).
+	
+values(mutate,Codes) :-
+	active_alphabet(Alphabet),
+	alphabet_codes(Alphabet,Codes).
+	
+values(insert,Codes) :-
+	active_alphabet(Alphabet),
+	alphabet_codes(Alphabet,Codes).
+
+variables_by_functor(Functor,VariableIds) :-
+	internal_compiled_regex(_,_,Vars),
+	findall(ID,(Matcher =.. [Functor,ID], member(Matcher,Vars)),VariableIds).
+	
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Regular expression matching
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% I should have a custom encoding of this to avoid 
+% problems due to DCGs and PRISM
+
+list_atom_codes([],[]).
+list_atom_codes([CodeList|CodeListRest],[Atom|AtomsRest]) :-
+	atom_codes(Atom,CodeList),
+	list_atom_codes(CodeListRest,AtomsRest).
+
+% re_match for input as atom
+pre_match(Regex,String,MatchesAtoms) :-
+	atom(String),
+	atom_codes(String,StringCodes),
+	pre_match_groups(Regex,[],ReverseMatches,StringCodes),
+	reverse(ReverseMatches,Matches),
+	list_atom_codes(Matches,MatchesAtoms).
+	
+% re_match for input as list of codes
+pre_match(Regex,StringCodes,Matches) :-
+ 	% verify that StringCodes is a list (e.g. not atom)
+	is_list(StringCodes),
+	pre_match_groups(Regex,[],ReverseMatches,StringCodes),
+	reverse(ReverseMatches,Matches).
+	
+pre_sample(Regex,String,Matches) :-
+	pre_match_groups(Regex,[],ReverseMatches,StringCodes),
+	reverse(ReverseMatches,Matches),
+	atom_codes(String,StringCodes).
+	
+% pre_match_groups:
+% Matches top-level expressed either encapsulated by a capture
+% group or not
+pre_match_groups([],MatchedGroups,MatchedGroups,[]).
+
+pre_match_groups([grouped(_id,R)|Rest],MatchedGroupsIn,MatchedGroupsOut,String) :-
+	append(StringMatchGroup,StringRest,String),
+	pre_match_rec(R,MatchedGroupsIn,AccumulateMatches,StringMatchGroup),
+	flatten(AccumulateMatches,MatchedGroup),
+	pre_match_groups(Rest,[MatchedGroup|MatchedGroupsIn],MatchedGroupsOut,StringRest).
+
+pre_match_groups([ungrouped(R)|Rest],MatchedGroupsIn,MatchedGroupsOut,String) :-
+	append(StringFirst,StringRest,String),
+	pre_match_rec(R,MatchedGroupsIn,_, StringFirst),
+	pre_match_groups(Rest,MatchedGroupsIn,MatchedGroupsOut,StringRest).
+
+%%% Regular expression matching recursive definition
+
+% Match the empty string
+pre_match_rec([],_,[],[]).
+
+%% Choice operator:
+pre_match_rec([or(Id), Left, Right],MatchedGroups,MatchAcc,String) :-
+	msw(or(Id),LeftRightChoice),
+	((LeftRightChoice==left) ->
+		pre_match_rec(Left,MatchedGroups,MatchAcc,String)
+		;
+		pre_match_rec(Right,MatchedGroups,MatchAcc,String)).
+
+% Concatenation:
+pre_match_rec([concat(_),Left,[]],MatchedGroups,MatchAcc,String) :-
+	pre_match_rec(Left,MatchedGroups,MatchAcc,String).
+
+pre_match_rec([concat,Left,Right],MatchedGroups,MatchAcc,String) :-
+	append(StringLeft,StringRight,String),
+	pre_match_rec(Left,MatchedGroups,MatchAcc1,StringLeft),
+	pre_match_rec(Right,MatchedGroups,MatchAcc2,StringRight),
+	append(MatchAcc1,MatchAcc2,MatchAcc).
+
+/* Experimental - to be more useful for sampling
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String) :-
+%	soft_msw(star(Id),continue),
+	RepeatCount < Min, 
+	pre_match_rec([star_cont(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String).
+	
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String) :-
+	RepeatCount > Max, 
+%	soft_msw(star(Id),stop),
+	pre_match_rec([star_stop(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String).
+	
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String) :-
+	write(String),nl,
+	RepeatCount >= Min, !,
+	Max >= RepeatCount,
+	write(constraint(RepeatCount,Min,Max)),nl,
+	write(RepeatCount),nl,
+	msw(star(Id),StarAction),
+	write(StarAction),nl,
+	((StarAction == stop) ->
+		write(pre_match_rec([star_stop(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String)),nl,
+		pre_match_rec([star_stop(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String)		
+		;
+		pre_match_rec([star_cont(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,Match,String)),
+	write('String: '), write(String),nl,
+	write('Matched: '), write(Match),nl.
+
+pre_match_rec([star_stop(_,_),_],_,[],[]).
+
+pre_match_rec([star_cont(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,[Match1|MatchRest],String) :-
+	write(pre_match_rec(Left,MatchedGroups,Match1,StringFirst)),nl,
+	pre_match_rec(Left,MatchedGroups,Match1,StringFirst),
+	write(here),nl,
+	NextRepeatCount is RepeatCount + 1,
+	write(pre_match_rec([star(Id,constraint(NextRepeatCount,Min,Max)),Left],MatchedGroups,MatchRest,StringRest)),nl,	
+	pre_match_rec([star(Id,constraint(NextRepeatCount,Min,Max)),Left],MatchedGroups,MatchRest,StringRest),
+	append(StringFirst,StringRest,String),
+	write(append(StringFirst,StringRest,String)),nl.
+*/
+
+/* working current:
+*/
+
+pre_match_rec([star(Id,constraint(RepeatCount,Min,_)),_],_MatchedGroups,[],[]) :-
+	msw(star(Id),stop),
+	RepeatCount >= Min.
+
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,[Match1|MatchRest],String) :-
+	msw(star(Id),continue),
+	RepeatCount < Max,
+	append(StringFirst,StringRest,String),
+	pre_match_rec(Left,MatchedGroups,Match1,StringFirst),
+	NextRepeatCount is RepeatCount + 1,
+	pre_match_rec([star(Id,constraint(NextRepeatCount,Min,Max)),Left],MatchedGroups,MatchRest,StringRest).
+
+/*
+pre_match_rec([star(Id,constraint(RepeatCount,Min,Max)),Left],MatchedGroups,[Match1|MatchRest],String) :-
+	pre_match_rec([star(Id),Left],MatchedGroups,[Match1|MatchRest],String).
+
+	
+pre_match_rec([star(Id),_],_MatchedGroups,[],[]) :-
+%	statistics,
+	msw(star(Id),stop).
+
+pre_match_rec([star(Id),Left],MatchedGroups,[Match1|MatchRest],String) :-
+	write(pre_match_rec([star(Id),Left],MatchedGroups,[Match1|MatchRest],String)),nl,nl,
+%	statistics,
+	msw(star(Id),continue),
+	append(StringFirst,StringRest,String),
+	pre_match_rec(Left,MatchedGroups,Match1,StringFirst),
+	NextRepeatCount is RepeatCount + 1,	
+	pre_match_rec([star(Id),Left],MatchedGroups,MatchRest,StringRest).
+*/	
+
+% FIXME: TO BE TESTED (TOMORROW)
+pre_match_rec([function,Goal], MatchedGroups, MatchAcc, String) :-
+	Goal =.. [Functor|ArgList1],
+	replace_backreference_arguments(ArgList1,MatchedGroups,InstantiatedArgs),
+	regex_fn(Functor,InstantiatedArgs,Return),
+	/*
+	((Functor==noisy) ->
+		replace_backreference_arguments(ArgList1,MatchedGroups,[Input]),
+		noisy(Input,Return)
+		(Functor==revcmpl) ->
+			replace_backreference_arguments(ArgList1,MatchedGroups,[Input]),
+			noisy(Input,Return)	
+		;
+		replace_backreference_arguments(ArgList1,MatchedGroups,ArgList2),
+		% Add a "return" argument
+		append(ArgList2,[Return],ArgList3),
+		CallGoal =.. [Functor|ArgList3],
+		write(call(CallGoal)),nl,
+		call(CallGoal)
+	),
+	*/
+	RefExpr1 = [94|Return],
+	reverse(RefExpr1,RefExpr2),
+	RefExpr3 = [36|RefExpr2],
+	reverse(RefExpr3,RefExpr4),%!,
+	re_compile(RefExpr4,[ungrouped(SubExpr)]),
+	pre_match_rec(SubExpr,[],MatchAcc,String).
+	
+% Back references:
+pre_match_rec([backref,Id], MatchedGroups, MatchAcc, String) :-
+	extract_ref(Id,MatchedGroups,RefExpr),
+	%write(extract_ref(Id,MatchedGroups,RefExpr)),nl,
+	pre_match_rec(RefExpr,[],MatchAcc,String).
+
+%% Match leaves:
+pre_match_rec(SymbolCode,_,[SymbolCode],[SymbolCode]) :-
+	integer(SymbolCode).
+	
+pre_match_rec(any(Id),_,[SymbolCode],[SymbolCode]) :-
+	msw(any(Id), SymbolCode).
+	
+extract_ref(Id,[ReferencedGroup|RestGroups],SubExpr) :-
+	length([ReferencedGroup|RestGroups],Id),
+	% Insert ^ and $ to avoid building an re which also reconizes sorroundings
+	RefExpr1 = [94|ReferencedGroup],
+	reverse(RefExpr1,RefExpr2),
+	RefExpr3 = [36|RefExpr2],
+	reverse(RefExpr3,RefExpr4),
+	!,
+	% No need to label, it will only consist of (unnumbered) concats
+	re_compile(RefExpr4,[ungrouped(SubExpr)]),
+	!.
+	
+extract_ref(Id,[_|MatchedGroups],RefExpr) :-
+	extract_ref(Id,MatchedGroups,RefExpr).
+
+replace_backreference_arguments([],_MatchedGroups,[]).
+replace_backreference_arguments([Arg|ArgS],MatchedGroups,[Arg2|Arg2S]) :-
+	nth(Arg,MatchedGroups,Arg2),
+	replace_backreference_arguments(ArgS,MatchedGroups,Arg2S).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Alphabets usuable by the engine       %
+% Using simpler may improve performance %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+%active_alphabet(dna_lowercase).%
+active_alphabet(dna_lowercase).
+
+% Full ascii alphabet
+alphabet_codes(ascii,Codes) :-
+	ascii_codes_rec(1,255,Codes).
+	
+% Simple alphabet consisting only of the letters a,b and c 
+alphabet_codes(abc,Codes) :-
+	ascii_codes_rec(97,99,Codes).
+	
+% A DNA alphabet
+alphabet_codes(dna,Codes) :-
+	alphabet_codes(dna_lowercase,SmallCodes),
+	alphabet_codes(dna_uppercase,BigCodes),	
+	append(SmallCodes,BigCodes,Codes).
+
+% A DNA alphabet
+alphabet_codes(dna_lowercase,Codes) :-
+	atom_codes(agct,Codes).
+	
+% A DNA alphabet
+alphabet_codes(dna_uppercase,Codes) :-
+	atom_codes('AGCT',Codes).
+	
+% A simple alphabet
+alphabet_codes(a,Codes) :-
+	atom_codes('a',Codes).	
+
+% utility for generation of sequential ascii codes 
+%ascii_codes_rec(+Min,+Max,Codes).
+ascii_codes_rec(MinMax,MinMax,[MinMax]).
+ascii_codes_rec(Min,Max,[Min|RestCodes]) :-
+	NextCode is Min + 1, 
+	ascii_codes_rec(NextCode,Max,RestCodes).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% The non-deterministic noisy function
+% Essentially a pair HMM
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+% Could find solutions and to the probabilistic scoring afterwards.
+
+noisy(In,Out) :-
+	length(In,InL),
+	noisy_max([InL,InL,InL],In,Out).
+	
+point_mutate(In,Out) :-
+	length(In,InL),
+	noisy_max([InL,0,0],In,Out).
+	
+noisy_max([MaxMut,MaxDel,MaxIns],In,Out) :-
+	noisy_forward_store([[],[[MaxMut,MaxDel,MaxIns],[0,0,0]]]),
+	noisy_rec(In,Out). 
+%		retractall(noisy_store(_)).
+	
+
+noisy_rec([],[]). % write(final),sleep(1000), !.
+
+noisy_rec(In,Out) :-
+	msw(noisy_action,Action), % Action \= insert,
+	noisy_action(Action,In,Out).
+
+/*
+noisy_action(mutate,[I|In],[O|Out]) :-
+%	write(noisy_action(mutate,[I|In],[O|Out])),nl,
+	noisy_get_store([As,[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]]),
+	msw(mutate(I),O),
+	((O == I) ->
+		noisy_forward_store([[match|As],[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]])
+		;
+		Mut < MaxMut,
+		NextMut is Mut + 1,
+		noisy_forward_store([[mutate|As],[[MaxMut,MaxDel,MaxIns],[NextMut,Del,Ins]]])),
+%	write(	noisy_rec(In,Out) ),nl,
+	noisy_rec(In,Out).
+*/
+
+noisy_action(mutate,[I|In],[O|Out]) :-
+%	write(noisy_action(mutate,[I|In],[O|Out])),nl,
+	noisy_get_store([As,[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]]),
+	msw(mutate,O),
+	((O == I) ->
+		noisy_forward_store([[match|As],[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]])
+		;
+		Mut < MaxMut,
+		NextMut is Mut + 1,
+		noisy_forward_store([[mutate|As],[[MaxMut,MaxDel,MaxIns],[NextMut,Del,Ins]]])),
+%	write(	noisy_rec(In,Out) ),nl,
+	noisy_rec(In,Out).
+	
+noisy_action(insert,In,[O|Out]) :-
+%	write(noisy_action(insert,In,[O|Out])),nl,
+	noisy_get_store([Actions,[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]]),
+%	((Actions == [delete(_)|_]) -> fail ; true),
+	Ins < MaxIns,
+	NextIns is Ins + 1,
+	msw(insert,O),
+%	write(after_msw),nl,
+	noisy_forward_store([[insert(O)|Actions],[[MaxMut,MaxDel,MaxIns],[Mut,Del,NextIns]]]),
+	!,
+	noisy_rec(In,Out).
+
+noisy_action(delete,[I|In],Out) :-
+%	write(noisy_action(delete,[_|In],Out)),nl,
+	noisy_get_store([Actions,[[MaxMut,MaxDel,MaxIns],[Mut,Del,Ins]]]),
+	((Actions == [insert(_)|_]) -> fail ; true),
+	Del < MaxDel,
+	NextDel is Del + 1,
+	noisy_forward_store([[delete(I)|Actions],[[MaxMut,MaxDel,MaxIns],[Mut,NextDel,Ins]]]),
+	noisy_rec(In,Out).
+
+noisy_forward_store(S) :- asserta(noisy_store(S)).
+noisy_forward_store(S) :- retract(noisy_store(S)), fail.
+noisy_get_store(S) :- noisy_store(S), !. 
+
+%noisy_forward_store(S) :- write(assert_store(S)),nl, asserta(noisy_store(S)).
+%noisy_forward_store(S) :- write(retract_store(S)),nl, retract(noisy_store(S)), fail.
+%noisy_get_store(S) :- write(get_store(S)), write( '--> '), (noisy_store(S) -> write(S),nl ; write(fail),nl,fail), !.
+
+%noisy_forward_store(N) :- (noisy_store(P) ; P=nil), asserta(noisy_store([N,P])).
+%noisy_forward_store(N) :- retract(noisy_store([N,P])), asserta(noisy_store(P)), fail.
+%noisy_get_store(S) :- noisy_store([S,_]), !.
+
+t1 :-
+	findall(X,noisy_max([1,1,1],[97],X),Xs),
+	write(Xs), length(Xs,L), write(L).
+	
+t2 :-
+	findall(X,noisy_max([0,0,1],[97],X),Xs),
+	write(Xs).
+	
+t3 :-
+	findall(X,noisy_max([0,1,0],[97],X),Xs),
+	write(Xs).
+	
+pt1 :-
+	viterbig(noisy_max([2,2,2],[97,97,97,97,97,97,97,97],G)),
+	write(G).
+	
+%%%% Predefined function calls %%%%%
+
+regex_fn(noisy, [Input], Return) :-
+	noisy(Input,Return).
+
+regex_fn(pointmutate, [Input], Return) :-
+	point_mutate(Input,Return).
+	
+regex_fn(revcmpl, [Input], Return) :-
+	revcmpl(Input,Return).
+	
